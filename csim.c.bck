@@ -1,0 +1,231 @@
+#include <getopt.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <math.h>
+#include "cachelab.h"
+
+
+/* Globals set by command line args */
+int verbosity = 0; /* print trace if set */
+int s = 0;         /* set index bits */
+int b = 0;         /* block offset bits */
+int E = 0;         /* associativity */
+char* trace_file = NULL;
+
+
+struct line {         
+	int valid;
+   long tag;
+   int last_time_used ;
+};
+
+struct set {  
+	struct line *lines;
+}; 
+
+struct cache {     
+	 struct set *sets;
+};
+
+struct cache init_cache(long n_sets, int n_lines) {   
+	struct cache cache;	 
+	struct set set;
+	struct line line;
+   int i;
+	int j;
+	cache.sets = (struct set*) malloc(sizeof(struct set) * n_sets);  
+	for (i = 0; i < n_sets; i ++) {       
+		set.lines =  (struct line *) malloc(sizeof(struct line) * n_lines);
+		cache.sets[i] = set;
+		for (j = 0; j < n_lines; j ++) {
+			line.last_time_used = 0;
+			line.valid = 0;
+			line.tag = 0; 
+			set.lines[j] = line;	
+		}	
+	} 
+   return cache;
+}
+
+int index_eviction(struct set set, int n_lines) {
+   int oldest = set.lines[0].last_time_used;
+	int index_eviction=0;
+	int j;
+	for (j = 1; j <n_lines; j ++) {
+		if (oldest > set.lines[j].last_time_used) {
+		  oldest = set.lines[j].last_time_used;
+		  index_eviction = j;
+		}
+	}
+	return index_eviction;
+}
+
+int index_empty_line(struct set set, int n_lines) {
+   int j;
+	for (j = 0; j <n_lines ; j ++ ) {
+	  struct line l = set.lines[j] ;
+	  if (l.valid == 0) {
+	    return j;
+	  }
+	}
+	return -1;  
+}
+
+int cache_infos(struct cache cache, int s, int b, int E , long address, int count) {
+  // hit return 0, miss return 1, miss + eviction 2
+   
+	int hits=0;
+	int misses=0;
+	int evicts=0;
+	int full = 1;     //initialize the cache state to full 
+   int i;
+	int n_lines  = E; 
+	unsigned long long int  tag = address >>(s+b);
+	unsigned long long  index_set = (address>>b)&((int) pow(2,s)-1) ;
+  	struct set set_c;   
+   set_c = cache.sets[index_set];
+	for (i = 0; i <E ; i ++){
+		if (set_c.lines[i].valid){   // check if valid !=0, if valid ==0 no need to continue because the line has never been used-> no match possible
+			if (set_c.lines[i].tag == tag){
+            set_c.lines[i].last_time_used = count;  // the more little c, is the line to evict if needed
+				hits ++;    // tag match -> raise hit
+			}
+		 } 
+       else if (!(set_c.lines[i].valid) && (full)) {
+				// valid tag = 0, fullcache != 0 -> this line is empty -> the cache is not full 
+			 full =0;
+	    }
+	}
+	if (hits!=0) { // we are in a hit case, no need to check for eviction
+		return 0;
+	}	
+
+	else{   // there is no hit in any line -> it is a miss
+		 misses++;   
+		if (full) {    // if cache is full do eviction
+			int to_evict;
+         to_evict = index_eviction(set_c, n_lines);
+		 	evicts++;
+		 	set_c.lines[to_evict].tag = tag;
+		 	set_c.lines[to_evict].last_time_used =count;
+		 	return 2;
+		}
+		else{      
+			int to_fill;
+         to_fill = index_empty_line(set_c, n_lines);
+			set_c.lines[to_fill].tag = tag;
+			set_c.lines[to_fill].valid = 1;
+			set_c.lines[to_fill].last_time_used = count;
+			return 1;
+		}		        
+	}
+}
+
+/*
+ * printUsage - Print usage info
+ */
+void printUsage(char* argv[])
+{
+    printf("Usage: %s [-hv] -s <num> -E <num> -b <num> -t <file>\n", argv[0]);
+    printf("Options:\n");
+    printf("  -h         Print this help message.\n");
+    printf("  -v         Optional verbose flag.\n");
+    printf("  -s <num>   Number of set index bits.\n");
+    printf("  -E <num>   Number of lines per set.\n");
+    printf("  -b <num>   Number of block offset bits.\n");
+    printf("  -t <file>  Trace file.\n");
+    printf("\nExamples:\n");
+    printf("  linux>  %s -s 4 -E 1 -b 4 -t traces/yi.trace\n", argv[0]);
+    printf("  linux>  %s -v -s 8 -E 2 -b 4 -t traces/yi.trace\n", argv[0]);
+    exit(0);
+}
+
+/*
+ * main - Main routine 
+ */
+int main(int argc, char* argv[])
+{
+  char c;
+  int s;
+  int b;
+  int E;
+  char* trace_file;
+  while( (c=getopt(argc,argv,"s:E:b:t:vh")) != -1){
+    switch(c){
+    case 's':
+      s = atoi(optarg);
+      break;
+    case 'E':
+      E = atoi(optarg);
+      break;
+    case 'b':
+      b = atoi(optarg);
+      break;
+    case 't':
+      trace_file = optarg;
+      break;
+    case 'v':
+      verbosity = 1;
+      break;
+    case 'h':
+      printUsage(argv);
+      exit(0);
+    default:
+      printUsage(argv);
+      exit(1);
+    }
+   }
+   
+  /* Make sure that all required command line args were specified */
+   if (s == 0 || E == 0 || b == 0 || trace_file == NULL) {
+    printf("%s: Missing required command line argument\n", argv[0]);
+    printUsage(argv);
+    exit(1);
+   }
+   long n_sets = pow(2,s);   // get Number of set by 2^s
+   int n_lines = E;
+   int hits = 0;
+   int misses = 0;
+   int evicts = 0;
+   struct cache cache = init_cache (n_sets, n_lines);
+   FILE* trace_file_string= fopen(trace_file, "r");
+	unsigned long long int address;
+   char instruction;
+   int size;
+	int count =0;
+	if (trace_file_string != NULL) {
+		while (fscanf(trace_file_string, " %c %llx,%d", &instruction, &address, &size) == 3) {
+		  count++;
+			if (instruction=='M' || instruction =='L' || instruction =='S') {//S,L needs one (they are equivalent here because we do not care about the block), cache_infos and M needs 2
+			  int result = cache_infos(cache, s,b,E,address, count);
+           if (result==0) {
+					hits++;
+					if (instruction == 'M') {
+						hits++;
+					}
+	      	}
+            else if (result ==1) { 
+					misses++;
+					if (instruction == 'M') {
+						hits++;
+					}
+	      	}
+	      	else if (result==2) {
+               misses++;
+					evicts++;
+					if (instruction == 'M'){
+						hits++;
+					}
+	      	}
+         }
+	        
+      }
+  }
+
+
+  printSummary(hits,misses,evicts);
+  fclose(trace_file_string) ;
+  return 0;
+
+}
